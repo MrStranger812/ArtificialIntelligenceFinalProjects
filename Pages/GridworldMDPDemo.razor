@@ -1,0 +1,773 @@
+﻿@page "/GridworldMDPDemo"
+
+@using System
+@using System.Collections.Generic
+@using System.Linq
+@inject IJSRuntime JSRuntime
+
+<h3>Gridworld MDP Demo (Single Environment)</h3>
+
+<div class="row mb-2">
+    <div class="col-md-2">
+        <label>Rows:</label>
+        <input type="number" min="1" @bind="rows" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label>Cols:</label>
+        <input type="number" min="1" @bind="cols" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label># Obstacles:</label>
+        <input type="number" min="0" @bind="numObstacles" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label># Terminals:</label>
+        <input type="number" min="1" @bind="numTerminals" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label>Discount (Gamma):</label>
+        <input type="number" min="0" max="1" step="0.01" @bind="discount" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label>Threshold:</label>
+        <input type="number" step="0.0001" @bind="threshold" class="form-control" />
+    </div>
+</div>
+
+
+<div class="row mb-2">
+    <div class="col-md-3">
+        <label>Intended Probability (0-1):</label>
+        <input type="number" min="0" max="1" step="0.01" @bind="pIntended" class="form-control" />
+    </div>
+    <div class="col-md-3">
+        <label>Left Probability (0-1):</label>
+        <input type="number" min="0" max="1" step="0.01" @bind="pLeft" class="form-control" />
+    </div>
+    <div class="col-md-3">
+        <label>Right Probability (0-1):</label>
+        <input type="number" min="0" max="1" step="0.01" @bind="pRight" class="form-control" />
+    </div>
+    <div class="col-md-3">
+        <label>Last Run Time (ms):</label><br />
+        <strong>@timeElapsed.ToString("F2")</strong>
+    </div>
+
+    <div class="col-md-3">
+        <label>VI Iterations:</label><br />
+        <strong>@(gw?.ValueIterationIterations)</strong>
+    </div>
+    <div class="col-md-3">
+        <label>PI Iterations:</label><br />
+        <strong>@(gw?.PolicyIterationIterations)</strong>
+    </div>
+
+</div>
+
+<div class="mb-2">
+    <button class="btn btn-secondary" @onclick="GenerateGridworld">Generate Gridworld</button>
+    <button class="btn btn-primary" @onclick="SolveAll" disabled="@(!canSolve)">
+        Solve (V.I. then P.I.)
+    </button>
+    <button class="btn btn-success" @onclick="ClearAll">Clear</button>
+</div>
+
+<div class="mb-2">
+    <button class="btn btn-secondary" @onclick="GenerateGridworldCS188">Generate CS188 Gridworld</button>
+</div>
+
+@if (gw is null)
+{
+    <p>No Gridworld loaded. Please click <em>Generate Gridworld</em>.</p>
+}
+else
+{
+
+    <div class="mb-2">
+        <label>Select Algorithm to Show:</label>
+        <select @bind="selectedAlgorithm" class="form-select" style="width:auto; display:inline-block">
+            <option value="ValueIteration">Value Iteration</option>
+            <option value="PolicyIteration">Policy Iteration</option>
+        </select>
+    </div>
+    <table class="table table-bordered table-sm" style="margin-top: 1rem;">
+        @for (int r = 0; r < gw.Rows; r++)
+        {
+            <tr>
+                @for (int c = 0; c < gw.Cols; c++)
+                {
+                    <td style="text-align:center; vertical-align:middle; width: 90px;">
+                        @if (gw.Obstacles.Contains((r, c)))
+                        {
+                            <span style="color:white; background-color:gray;">WALL</span>
+                        }
+                        else if (gw.Terminals.Contains((r, c)))
+                        {
+                            <strong>@gw.Rewards[(r, c)].ToString("F1")</strong>
+                        }
+                        else
+                        {
+                            <!-- Show the selected utilities & policy -->
+                            <div>
+                                <span>
+                                    @GetDisplayedUtility(r, c).ToString("F3")
+                                </span><br />
+                                @if (GetDisplayedPolicy(r, c) != -1)
+                                {
+                                    <em>@actionList[GetDisplayedPolicy(r, c)]</em>
+                                }
+                            </div>
+                        }
+                    </td>
+
+                }
+            </tr>
+        }
+    </table>
+}
+
+
+
+<div class="row mb-3">
+    <div class="col">
+        <h4>Time Chart</h4>
+        <canvas id="timeChart" width="400" height="200"></canvas>
+    </div>
+</div>
+@code {
+
+        // ----------------------
+        // 1. Data & Parameters
+        // ----------------------
+
+    private Gridworld? gw;
+
+    private List<List<double>>? valueIterationUtility;
+    private List<List<int>>? valueIterationPolicy;
+
+    private List<List<double>>? policyIterationUtility;
+    private List<List<int>>? policyIterationPolicy;
+
+
+    private int rows = 3;
+    private int cols = 4;
+    private int numObstacles = 1;
+    private int numTerminals = 2;
+    private double discount = 0.9;
+    private double threshold = 1e-3;
+
+    private double pIntended = 0.8;
+    private double pLeft = 0.1;
+    private double pRight = 0.1;
+
+    private bool canSolve = false;
+
+    private double timeElapsed = 0.0;
+    private double valueIterationTime = 0.0;
+    private double policyIterationTime = 0.0;
+
+
+
+
+    private string selectedAlgorithm = "ValueIteration";
+
+    // Down=0, Left=1, Up=2, Right=3
+    private string[] actionList = new string[] { "Down", "Left", "Up", "Right" };
+    private string cellEditMode = "Empty";
+    private int numAgents = 5;
+    private int episodesPerAgent = 100;
+    // ----------------------
+    // 2. Generate Gridworld
+    // ----------------------
+    private void GenerateGridworld()
+    {
+        var random = new Random();
+        var newObstacles = new HashSet<(int, int)>();
+        var newTerminals = new HashSet<(int, int)>();
+        var newRewards = new Dictionary<(int, int), double>();
+
+        int count = 0;
+        while (count < numObstacles)
+        {
+            int rr = random.Next(rows);
+            int cc = random.Next(cols);
+            if (!newObstacles.Contains((rr, cc)) && !newTerminals.Contains((rr, cc)))
+            {
+                newObstacles.Add((rr, cc));
+                count++;
+            }
+        }
+
+        int half = numTerminals / 2;
+        int leftover = numTerminals % 2;
+
+        count = 0;
+        int neededPlus = half + leftover;
+        while (count < neededPlus)
+        {
+            int rr = random.Next(rows);
+            int cc = random.Next(cols);
+            if (!newObstacles.Contains((rr, cc)) && !newTerminals.Contains((rr, cc)))
+            {
+                newTerminals.Add((rr, cc));
+                newRewards[(rr, cc)] = 1.0;
+                count++;
+            }
+        }
+
+        count = 0;
+        while (count < half)
+        {
+            int rr = random.Next(rows);
+            int cc = random.Next(cols);
+            if (!newObstacles.Contains((rr, cc)) && !newTerminals.Contains((rr, cc)))
+            {
+                newTerminals.Add((rr, cc));
+                newRewards[(rr, cc)] = -1.0;
+                count++;
+            }
+        }
+
+        // List of possible actions
+        var actions = new List<(int, int)>
+        {
+            (1, 0),   // Down
+            (0, -1),  // Left
+            (-1, 0),  // Up
+            (0, 1)    // Right
+        };
+        gw = new Gridworld(rows, cols, newRewards, newTerminals, newObstacles, actions, discount);
+        gw.SetTransitionProbabilities(pIntended, pLeft, pRight);
+        timeElapsed = 0.0;
+        valueIterationTime = 0.0;
+        policyIterationTime = 0.0;
+        canSolve = true;
+        valueIterationUtility = null;
+        valueIterationPolicy = null;
+        policyIterationUtility = null;
+        policyIterationPolicy = null;
+
+        StateHasChanged();
+    }
+    private void GenerateGridworldCS188() 
+    {
+        var newObstacles = new HashSet<(int, int)>();
+        var newTerminals = new HashSet<(int, int)>();
+        var newRewards = new Dictionary<(int, int), double>();
+
+        newRewards[(1, 3)] = -1.0;
+        newRewards[(0, 3)] = 1.0;
+        newObstacles.Add((1,1));
+        newTerminals.Add((0, 3));
+        newTerminals.Add((1, 3));
+
+        var actions = new List<(int, int)>
+        {
+            (1, 0),   // Down
+            (0, -1),  // Left
+            (-1, 0),  // Up
+            (0, 1)    // Right
+        };
+
+        gw = new Gridworld(3, 4, newRewards, newTerminals, newObstacles, actions, discount);
+
+
+        gw.SetTransitionProbabilities(pIntended, pLeft, pRight);
+        timeElapsed = 0.0;
+        valueIterationTime = 0.0;
+        policyIterationTime = 0.0;
+        canSolve = true;
+        valueIterationUtility = null;
+        valueIterationPolicy = null;
+        policyIterationUtility = null;
+        policyIterationPolicy = null;
+
+
+    }
+    // ----------------------------------
+    // 3. Solve for Both Methods
+    // ----------------------------------
+    private async Task SolveAll()
+    {
+        if (gw == null) return;
+        canSolve = false;
+
+        // 1) Value Iteration
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        gw.ValueIteration(threshold);
+        gw.GetOptimalPolicy();
+        sw.Stop();
+        valueIterationTime = sw.Elapsed.TotalMilliseconds;
+        valueIterationUtility = gw.CloneUtility(gw.Utility);
+        valueIterationPolicy = gw.ClonePolicy(gw.Policy);
+        
+        // simulation Agent
+        // 2) Reset the environment’s utilities/policy but keep obstacles, terminals, etc.
+        gw.ResetUtilities();  
+        gw.ResetPolicy();     
+
+        // 3) Policy Iteration
+        sw.Restart();
+        gw.PolicyIteration(threshold);
+        sw.Stop();
+        policyIterationTime = sw.Elapsed.TotalMilliseconds;
+        policyIterationUtility = gw.CloneUtility(gw.Utility);
+        policyIterationPolicy = gw.ClonePolicy(gw.Policy);
+
+        // Last run time to display in the UI
+        timeElapsed = policyIterationTime;
+
+        // Update chart with both times
+        await RefreshChart();
+
+        StateHasChanged();
+    }
+
+    // ----------------------
+    // 4. Clear & Chart
+    // ----------------------
+    private void ClearAll()
+    {
+        gw = null;
+        timeElapsed = 0.0;
+        valueIterationTime = 0.0;
+        policyIterationTime = 0.0;
+        canSolve = false;
+
+        valueIterationUtility = null;
+        valueIterationPolicy = null;
+        policyIterationUtility = null;
+        policyIterationPolicy = null;
+    }
+
+    private async Task RefreshChart()
+    {
+        var labelArray = new string[] { "Value Iteration", "Policy Iteration" };
+        var dataArray = new double[] { valueIterationTime, policyIterationTime };
+
+        await JSRuntime.InvokeVoidAsync("timeChartFunctions.updateChart", "timeChart", labelArray, dataArray);
+    }
+
+    // -------------------------
+    // 5. Displaying the Results
+    // -------------------------
+    private double GetDisplayedUtility(int r, int c)
+    {
+        if (selectedAlgorithm == "ValueIteration" && valueIterationUtility != null)
+            return valueIterationUtility[r][c];
+        if (selectedAlgorithm == "PolicyIteration" && policyIterationUtility != null)
+            return policyIterationUtility[r][c];
+        return 0.0;
+    }
+
+    // Helper for the table: choose which algorithm’s policy to show
+    private int GetDisplayedPolicy(int r, int c)
+    {
+        if (selectedAlgorithm == "ValueIteration" && valueIterationPolicy != null)
+            return valueIterationPolicy[r][c];
+        if (selectedAlgorithm == "PolicyIteration" && policyIterationPolicy != null)
+            return policyIterationPolicy[r][c];
+        return -1;
+    }
+
+
+
+    // -------------------------------------------------
+    // 6. Gridworld Class
+    // -------------------------------------------------
+    public class Gridworld
+    {
+        public int Rows { get; }
+        public int Cols { get; }
+        public Dictionary<(int, int), double> Rewards { get; }
+        public HashSet<(int, int)> Terminals { get; }
+        public HashSet<(int, int)> Obstacles { get; }
+        public List<(int, int)> Actions { get; }
+        public double Discount { get; }
+
+        private double pIntended = 0.8;
+        private double pLeft = 0.1;
+        private double pRight = 0.1;
+
+        public int ValueIterationIterations { get; private set; } = 0;
+        public int PolicyIterationIterations { get; private set; } = 0;
+        public List<List<double>> Utility { get; private set; }
+        public List<List<int>> Policy { get; private set; }
+
+        private Random rng = new Random();
+
+        public Gridworld(int rows, int cols,
+                         Dictionary<(int, int), double> rewards,
+                         HashSet<(int, int)> terminals,
+                         HashSet<(int, int)> obstacles,
+                         List<(int, int)> actions,
+                         double discount)
+        {
+            Rows = rows;
+            Cols = cols;
+            Rewards = rewards;
+            Terminals = terminals;
+            Obstacles = obstacles;
+            Actions = actions;
+            Discount = discount;
+
+            Utility = new List<List<double>>();
+            Policy = new List<List<int>>();
+            for (int r = 0; r < Rows; r++)
+            {
+                Utility.Add(new List<double>());
+                Policy.Add(new List<int>());
+                for (int c = 0; c < Cols; c++)
+                {
+                    double initVal = Rewards.ContainsKey((r, c)) ? Rewards[(r, c)] : 0.0;
+                    Utility[r].Add(initVal);
+
+                    if (Terminals.Contains((r, c)) || Obstacles.Contains((r, c)))
+                        Policy[r].Add(-1);
+                    else
+                        Policy[r].Add(0);
+                }
+            }
+        }
+
+        public void SetTransitionProbabilities(double intended, double left, double right)
+        {
+            pIntended = intended;
+            pLeft = left;
+            pRight = right;
+        }
+
+        private bool IsValid(int r, int c)
+        {
+            return (r >= 0 && r < Rows && c >= 0 && c < Cols && !Obstacles.Contains((r, c)));
+        }
+
+        public (int, int) SampleNextState((int, int) state, int action)
+        {
+            // The same transitions used by CalculateUtility, but now we pick one outcome.
+            double roll = rng.NextDouble();
+            // Determine which outcome we fall into
+            int intendedA = action;
+            int leftA = (action - 1 + Actions.Count) % Actions.Count;
+            int rightA = (action + 1) % Actions.Count;
+
+            if (roll <= pIntended)
+                return Move(state, intendedA);
+            else if (roll <= pIntended + pLeft)
+                return Move(state, leftA);
+            else
+                return Move(state, rightA);
+        }
+
+        private (int, int) Move((int, int) state, int actionIndex)
+        {
+            var (r, c) = state;
+            var (dr, dc) = Actions[actionIndex];
+            int nr = r + dr;
+            int nc = c + dc;
+
+            // If invalid, remain in place
+            if (!IsValid(nr, nc)) return state;
+            return (nr, nc);
+        }
+
+        public double CalculateUtility(int r, int c, int action)
+        {
+            var (dr, dc) = Actions[action];
+            int intendedR = r + dr;
+            int intendedC = c + dc;
+            if (!IsValid(intendedR, intendedC))
+            {
+                intendedR = r;
+                intendedC = c;
+            }
+
+            // left
+            int leftAction = (action - 1 + Actions.Count) % Actions.Count;
+            var (ldr, ldc) = Actions[leftAction];
+            int leftR = r + ldr;
+            int leftC = c + ldc;
+            if (!IsValid(leftR, leftC))
+            {
+                leftR = r;
+                leftC = c;
+            }
+
+            // right
+            int rightAction = (action + 1) % Actions.Count;
+            var (rdr, rdc) = Actions[rightAction];
+            int rightR = r + rdr;
+            int rightC = c + rdc;
+            if (!IsValid(rightR, rightC))
+            {
+                rightR = r;
+                rightC = c;
+            }
+
+            double immediateReward = Rewards.ContainsKey((r, c)) ? Rewards[(r, c)] : 0.0;
+            double expectedNext =
+                  pIntended * Utility[intendedR][intendedC]
+                + pLeft * Utility[leftR][leftC]
+                + pRight * Utility[rightR][rightC];
+
+            return immediateReward + Discount * expectedNext;
+        }
+
+        #region Value Iteration
+        public void ValueIteration(double threshold)
+        {
+            ValueIterationIterations = 0;
+            while (true)
+            {
+                ValueIterationIterations++;
+
+                double maxError = 0.0;
+                var newUtility = CloneUtility(Utility);
+
+                for (int r = 0; r < Rows; r++)
+                {
+                    for (int c = 0; c < Cols; c++)
+                    {
+                        if (Terminals.Contains((r, c)) || Obstacles.Contains((r, c)))
+                            continue;
+
+                        double best = double.NegativeInfinity;
+                        for (int a = 0; a < Actions.Count; a++)
+                        {
+                            double cand = CalculateUtility(r, c, a);
+                            if (cand > best) best = cand;
+                        }
+
+                        newUtility[r][c] = best;
+                        maxError = Math.Max(maxError, Math.Abs(best - Utility[r][c]));
+                    }
+                }
+
+                Utility = newUtility;
+                if (maxError < threshold * (1 - Discount) / Discount)
+                    break;
+            }
+        }
+
+
+        public void GetOptimalPolicy()
+        {
+            for (int r = 0; r < Rows; r++)
+            {
+                for (int c = 0; c < Cols; c++)
+                {
+                    if (Terminals.Contains((r, c)) || Obstacles.Contains((r, c)))
+                    {
+                        Policy[r][c] = -1;
+                        continue;
+                    }
+
+                    int bestA = 0;
+                    double bestVal = CalculateUtility(r, c, bestA);
+                    for (int a = 1; a < Actions.Count; a++)
+                    {
+                        double cand = CalculateUtility(r, c, a);
+                        if (cand > bestVal)
+                        {
+                            bestVal = cand;
+                            bestA = a;
+                        }
+                    }
+                    Policy[r][c] = bestA;
+                }
+            }
+        }
+        #endregion
+
+        #region Policy Iteration
+        public void PolicyIteration(double threshold)
+        {
+            PolicyIterationIterations = 0;  
+
+            while (true)
+            {
+                PolicyIterationIterations++;
+                PolicyEvaluation(threshold);
+                bool changed = PolicyImprovement();
+                if (!changed)
+                    break;
+            }
+        }
+
+        private void PolicyEvaluation(double threshold)
+        {
+            while (true)
+            {
+                double maxError = 0.0;
+                var newUtility = CloneUtility(Utility);
+
+                for (int r = 0; r < Rows; r++)
+                {
+                    for (int c = 0; c < Cols; c++)
+                    {
+                        if (Terminals.Contains((r, c)) || Obstacles.Contains((r, c)))
+                            continue;
+
+                        int a = Policy[r][c];
+                        double newU = CalculateUtility(r, c, a);
+                        maxError = Math.Max(maxError, Math.Abs(newU - Utility[r][c]));
+                        newUtility[r][c] = newU;
+                    }
+                }
+
+                Utility = newUtility;
+                if (maxError < threshold * (1 - Discount) / Discount)
+                    break;
+            }
+        }
+
+        private bool PolicyImprovement()
+        {
+            bool changed = false;
+            var newPolicy = ClonePolicy(Policy);
+
+            for (int r = 0; r < Rows; r++)
+            {
+                for (int c = 0; c < Cols; c++)
+                {
+                    if (Terminals.Contains((r, c)) || Obstacles.Contains((r, c)))
+                    {
+                        newPolicy[r][c] = -1;
+                        continue;
+                    }
+
+                    int currentA = newPolicy[r][c];
+                    double currentVal = CalculateUtility(r, c, currentA);
+
+                    for (int a = 0; a < Actions.Count; a++)
+                    {
+                        double cand = CalculateUtility(r, c, a);
+                        if (cand > currentVal)
+                        {
+                            currentVal = cand;
+                            newPolicy[r][c] = a;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            Policy = newPolicy;
+            return changed;
+        }
+        #endregion
+
+        #region Helpers
+        public List<List<double>> CloneUtility(List<List<double>> source)
+        {
+            var copy = new List<List<double>>(source.Count);
+            foreach (var row in source)
+            {
+                copy.Add(new List<double>(row));
+            }
+            return copy;
+        }
+
+        public List<List<int>> ClonePolicy(List<List<int>> source)
+        {
+            var copy = new List<List<int>>(source.Count);
+            foreach (var row in source)
+            {
+                copy.Add(new List<int>(row));
+            }
+            return copy;
+        }
+
+        public void ResetUtilities()
+        {
+            for (int r = 0; r < Rows; r++)
+            {
+                for (int c = 0; c < Cols; c++)
+                {
+                    if (Terminals.Contains((r, c)) || Obstacles.Contains((r, c)))
+                    {
+                        // Keep terminal reward as is, or you might re-set if you prefer
+                        continue;
+                    }
+                    Utility[r][c] = 0.0;
+                }
+            }
+        }
+
+        public void ResetPolicy()
+        {
+            for (int r = 0; r < Rows; r++)
+            {
+                for (int c = 0; c < Cols; c++)
+                {
+                    if (Terminals.Contains((r, c)) || Obstacles.Contains((r, c)))
+                        Policy[r][c] = -1;
+                    else
+                        Policy[r][c] = 0;
+                }
+            }
+        }
+        #endregion
+
+        public List<List<double>> EstimateUtilitiesViaSimulation(List<List<int>> policy,int episodesPerCell,int maxStepsPerEpisode = 100)
+        {
+            var results = new List<List<double>>(Rows);
+            for (int r = 0; r < Rows; r++)
+            {
+                results.Add(new List<double>(Cols));
+                for (int c = 0; c < Cols; c++)
+                {
+                    results[r].Add(0.0);
+                }
+            }
+
+            // For each cell that is not terminal or obstacle,
+            // run multiple episodes to estimate the value.
+            for (int r = 0; r < Rows; r++)
+            {
+                for (int c = 0; c < Cols; c++)
+                {
+                    // If it’s a terminal or an obstacle,
+                    // we can just set the estimate to the reward (or 0).
+                    if (Terminals.Contains((r, c)) || Obstacles.Contains((r, c)))
+                    {
+                        if (Rewards.ContainsKey((r, c)))
+                            results[r][c] = Rewards[(r, c)];
+                        else
+                            results[r][c] = 0.0;
+                        continue;
+                    }
+
+                    double totalReturn = 0.0;
+
+                    // Simulate episodesPerCell times
+                    for (int e = 0; e < episodesPerCell; e++)
+                    {
+                        double G = 0.0;
+                        double gammaPow = 1.0;
+                        (int, int) currentState = (r, c);
+
+                        for (int step = 0; step < maxStepsPerEpisode; step++)
+                        {
+                            double reward = 0.0;
+                            if (Rewards.ContainsKey(currentState))
+                                reward = Rewards[currentState];
+
+                            G += gammaPow * reward;
+                            gammaPow *= Discount;
+
+                            if (Terminals.Contains(currentState))
+                                break;
+
+                            int action = policy[currentState.Item1][currentState.Item2];
+                            currentState = SampleNextState(currentState, action);
+                        }
+                        totalReturn += G;
+                    }
+                    results[r][c] = totalReturn / episodesPerCell;
+                }
+            }
+            return results;
+        }
+    }
+}

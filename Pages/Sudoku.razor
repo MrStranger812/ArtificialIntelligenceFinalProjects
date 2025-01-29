@@ -1,0 +1,501 @@
+﻿@page "/sudoku"
+@layout MainLayout
+@inject IJSRuntime JSRuntime
+<h3>Sudoku</h3>
+
+<div class="sudoku-controls">
+    <input type="number" @bind="numberCount" min="1" max="81" placeholder="Number of cells to fill" />
+    <button @onclick="GenerateRandomNumbers">Generate Random Numbers</button>
+    <button @onclick="SolveAndDisplayBacktracking">Solve with Backtracking</button>
+    <button @onclick="SolveAndDisplayArcConsistency">Solve with Arc Consistency + Backtracking</button>
+    <button @onclick="ClearGrid">Clear the Grid</button>
+</div>
+
+<div class="sudoku-grid">
+    @for (int row = 0; row < 9; row++)
+    {
+        <div class="sudoku-row">
+            @for (int col = 0; col < 9; col++)
+            {
+                <input type="text" class="sudoku-cell" @bind="grid[row][col]" maxlength="1" />
+            }
+        </div>
+    }
+</div>
+
+@if (!string.IsNullOrEmpty(solutionMessage))
+{
+    <div class="solution-message">
+        @solutionMessage
+    </div>
+}
+
+<canvas id="myChart" width="400" height="200"></canvas>
+
+<style>
+    .sudoku-controls {
+        margin-bottom: 20px;
+    }
+
+    .sudoku-controls input {
+        padding: 5px;
+        margin-right: 10px;
+        width: 200px;
+    }
+
+    .sudoku-controls button {
+        padding: 5px 10px;
+        background-color: #007bff;
+        color: white;
+        border: none;
+        cursor: pointer;
+        margin-right: 5px;
+    }
+
+    .sudoku-controls button:hover {
+        background-color: #0056b3;
+    }
+
+    .sudoku-grid {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .sudoku-row {
+        display: flex;
+    }
+
+    .sudoku-cell {
+        width: 40px;
+        height: 40px;
+        text-align: center;
+        font-size: 18px;
+        border: 1px solid #ccc;
+        margin: 1px;
+    }
+
+    .sudoku-cell:focus {
+        outline: none;
+        border-color: #66afe9;
+        box-shadow: 0 0 8px rgba(102, 175, 233, 0.6);
+    }
+
+    .solution-message {
+        margin-top: 20px;
+        font-size: 18px;
+        font-weight: bold;
+        color: #007bff;
+    }
+</style>
+
+@code {
+    private static int N = 9;
+    private List<List<string>> grid = new List<List<string>>(); // 9x9 grid to store Sudoku values
+    private int numberCount = 10; // Default number of cells to fill
+    private string solutionMessage = "";
+
+    private Random random = new Random();
+
+    protected override void OnInitialized()
+    {
+        for (int i = 0; i < N; i++)
+        {
+            grid.Add(new List<string>());
+            for (int j = 0; j < N; j++)
+                grid[i].Add("");
+        }
+    }
+
+    // -----------------------------------------------------
+    // 1) RANDOM NUMBER GENERATION
+    // -----------------------------------------------------
+    private void GenerateRandomNumbers()
+    {
+        for (int i = 0; i < numberCount; i++)
+        {
+            int row, col, num = 0;
+            bool isValid = false;
+
+            do
+            {
+                // Generate random row and column
+                row = random.Next(0, 9);
+                col = random.Next(0, 9);
+
+                if (string.IsNullOrEmpty(grid[row][col]))
+                {
+                    // Generate a random number between 1 and 9
+                    num = random.Next(1, 10);
+
+                    // Check if the number is valid for the current cell
+                    isValid = IsSafeForRandomPlacement(row, col, num);
+                }
+                else
+                {
+                    // Cell is not empty
+                    isValid = false;
+                    num = 0;
+                }
+            } while (!isValid);
+
+            // Place the valid number
+            grid[row][col] = num.ToString();
+        }
+    }
+
+    private bool IsSafeForRandomPlacement(int row, int col, int num)
+    {
+        // Check row
+        for (int c = 0; c < 9; c++)
+            if (grid[row][c] == num.ToString())
+                return false;
+
+        // Check column
+        for (int r = 0; r < 9; r++)
+            if (grid[r][col] == num.ToString())
+                return false;
+
+        // Check 3x3 box
+        int subgridRow = row - row % 3;
+        int subgridCol = col - col % 3;
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+                if (grid[subgridRow + r][subgridCol + c] == num.ToString())
+                    return false;
+
+        return true;
+    }
+
+    // -----------------------------------------------------
+    // 2) CLEAR GRID
+    // -----------------------------------------------------
+    private void ClearGrid()
+    {
+        for (int row = 0; row < N; row++)
+            for (int col = 0; col < N; col++)
+                grid[row][col] = "";
+        solutionMessage = "";
+    }
+
+    // -----------------------------------------------------
+    // 3) BACKTRACKING SOLVER
+    // -----------------------------------------------------
+    private bool SolveSudokuBacktracking(int[,] intGrid, int row, int col)
+    {
+        if (row == N - 1 && col == N)
+            return true; // Puzzle solved
+
+        if (col == N)
+        {
+            row++;
+            col = 0;
+        }
+
+        if (intGrid[row, col] != 0)
+        {
+            // Skip filled cells
+            return SolveSudokuBacktracking(intGrid, row, col + 1);
+        }
+
+        for (int num = 1; num <= N; num++)
+        {
+            if (IsSafe(intGrid, row, col, num))
+            {
+                intGrid[row, col] = num; // Place the number
+
+                if (SolveSudokuBacktracking(intGrid, row, col + 1))
+                    return true;
+
+                // Backtrack
+                intGrid[row, col] = 0;
+            }
+        }
+
+        return false; // Trigger backtracking
+    }
+
+    private bool IsSafe(int[,] intGrid, int row, int col, int num)
+    {
+        // Check row
+        for (int c = 0; c < N; c++)
+        {
+            if (intGrid[row, c] == num) return false;
+        }
+
+        // Check column
+        for (int r = 0; r < N; r++)
+        {
+            if (intGrid[r, col] == num) return false;
+        }
+
+        // Check 3x3 subgrid
+        int subgridRow = row - row % 3;
+        int subgridCol = col - col % 3;
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+            {
+                if (intGrid[subgridRow + r, subgridCol + c] == num)
+                    return false;
+            }
+
+        return true;
+    }
+
+    private void SolveAndDisplayBacktracking()
+    {
+        // Convert List<List<string>> to int[,]
+        int[,] intGrid = ConvertTo2DIntArray();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        bool solved = SolveSudokuBacktracking(intGrid, 0, 0);
+
+        sw.Stop();
+        long timeMs = sw.ElapsedMilliseconds;
+
+        if (solved)
+        {
+            // Update the grid with the solution
+            ConvertToListOfString(intGrid);
+            solutionMessage = $"Backtracking: Solved in {timeMs} ms!";
+        }
+        else
+        {
+            solutionMessage = $"Backtracking: No solution found. (Time: {timeMs} ms)";
+        }
+
+        StateHasChanged();
+    }
+
+
+    // We'll keep a dictionary: (row, col) -> HashSet<int> representing the domain of each cell
+    private Dictionary<(int, int), HashSet<int>> domains;
+
+    private void InitializeDomains(int[,] board)
+    {
+        domains = new Dictionary<(int, int), HashSet<int>>();
+        for (int r = 0; r < N; r++)
+        {
+            for (int c = 0; c < N; c++)
+            {
+                if (board[r, c] == 0)
+                {
+                    // If cell is empty, possible domain is {1..9} minus any conflicts
+                    var possibleValues = new HashSet<int>(Enumerable.Range(1, 9));
+                    domains[(r, c)] = possibleValues;
+                }
+                else
+                {
+                    // If cell is filled, domain is that single value
+                    domains[(r, c)] = new HashSet<int>() { board[r, c] };
+                }
+            }
+        }
+    }
+
+    private bool AC3(int[,] board)
+    {
+        // Build queue of all arcs
+        Queue<(int, int, int, int)> queue = new Queue<(int, int, int, int)>();
+
+        // Every pair of cells in the same row, column, or box are arcs
+        for (int r = 0; r < N; r++)
+        {
+            for (int c = 0; c < N; c++)
+            {
+                var neighbors = GetNeighbors(r, c);
+                foreach (var (nr, nc) in neighbors)
+                    queue.Enqueue((r, c, nr, nc));
+            }
+        }
+
+        while (queue.Count > 0)
+        {
+            var (r1, c1, r2, c2) = queue.Dequeue();
+            if (Revise((r1, c1), (r2, c2)))
+            {
+                // If we removed a value, and domain is now empty => inconsistent
+                if (domains[(r1, c1)].Count == 0)
+                    return false;
+
+                // Add all neighbors of (r1, c1) back into the queue
+                var neighbors = GetNeighbors(r1, c1);
+                foreach (var (nr, nc) in neighbors)
+                    if ((nr, nc) != (r2, c2))
+                        queue.Enqueue((nr, nc, r1, c1));
+            }
+        }
+        return true;
+    }
+
+    // 'Revise' attempts to prune the domain of cellX based on cellY
+    private bool Revise((int r, int c) cellX, (int r, int c) cellY)
+    {
+        bool revised = false;
+        var domainX = domains[cellX];
+        var domainY = domains[cellY];
+
+        // If cellY has exactly one possible value, we can remove it from X if it conflicts
+        if (domainY.Count == 1)
+        {
+            int valueY = domainY.First();
+            if (domainX.Contains(valueY) && (cellX != cellY))
+            {
+                domainX.Remove(valueY);
+                revised = true;
+            }
+        }
+        return revised;
+    }
+
+    // Returns all cells in the same row, column, or box
+    private List<(int, int)> GetNeighbors(int row, int col)
+    {
+        var neighbors = new List<(int, int)>();
+        // Same row
+        for (int c = 0; c < N; c++)
+            if (c != col) neighbors.Add((row, c));
+
+        // Same column
+        for (int r = 0; r < N; r++)
+            if (r != row) neighbors.Add((r, col));
+
+        // Same 3x3 box
+        int subgridRow = (row / 3) * 3;
+        int subgridCol = (col / 3) * 3;
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+            {
+                int rr = subgridRow + r;
+                int cc = subgridCol + c;
+                if (rr != row || cc != col)
+                    neighbors.Add((rr, cc));
+            }
+
+        return neighbors;
+    }
+
+
+    private bool BacktrackingWithAC3(int[,] board)
+    {
+        // If AC-3 fails at any point, return false
+        if (!AC3(board)) return false;
+
+        // Check if fully assigned
+        var unassigned = domains.Where(d => d.Value.Count > 1).ToList();
+        if (unassigned.Count == 0)
+        {
+            // All cells have a single domain => solution found!
+            // Update board
+            foreach (var kvp in domains)
+            {
+                board[kvp.Key.Item1, kvp.Key.Item2] = kvp.Value.First();
+            }
+            return true;
+        }
+
+        // Choose an unassigned cell with the smallest domain (MRV heuristic)
+        var cell = unassigned.OrderBy(d => d.Value.Count).First();
+        var (row, col) = cell.Key;
+
+        // Try each possible value in this cell's domain
+        var possibleValues = cell.Value.ToArray();
+        foreach (int val in possibleValues)
+        {
+            // Make a copy of the current domains
+            var savedDomains = CopyDomains();
+
+            // Assign val to cell
+            domains[(row, col)] = new HashSet<int> { val };
+
+            // Re-run AC-3 to propagate constraints
+            if (AC3(board))
+            {
+                if (BacktrackingWithAC3(board))
+                    return true;
+            }
+
+            // Restore old domains on failure
+            domains = savedDomains;
+        }
+
+        return false; // No value led to a solution
+    }
+
+    private Dictionary<(int, int), HashSet<int>> CopyDomains()
+    {
+        var newDict = new Dictionary<(int, int), HashSet<int>>();
+        foreach (var kvp in domains)
+            newDict[kvp.Key] = new HashSet<int>(kvp.Value);
+        return newDict;
+    }
+
+    private void SolveAndDisplayArcConsistency()
+    {
+        // Convert to int array from UI
+        int[,] intGrid = ConvertTo2DIntArray();
+
+        // Initialize domains based on the current board
+        InitializeDomains(intGrid);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        bool solved = BacktrackingWithAC3(intGrid);
+
+        sw.Stop();
+        long timeMs = sw.ElapsedMilliseconds;
+
+        if (solved)
+        {
+            // Convert back to string grid for display
+            ConvertToListOfString(intGrid);
+            solutionMessage = $"AC + Backtracking: Solved in {timeMs} ms!";
+        }
+        else
+        {
+            solutionMessage = $"AC + Backtracking: No solution found. (Time: {timeMs} ms)";
+        }
+
+        StateHasChanged();
+    }
+
+
+    // -----------------------------------------------------
+    // 6) HELPER CONVERSIONS
+    // -----------------------------------------------------
+    private int[,] ConvertTo2DIntArray()
+    {
+        int[,] intGrid = new int[N, N];
+        for (int i = 0; i < N; i++)
+        {
+            for (int j = 0; j < N; j++)
+            {
+                if (string.IsNullOrEmpty(grid[i][j]))
+                    intGrid[i, j] = 0;
+                else
+                {
+                    if (int.TryParse(grid[i][j], out int val))
+                        intGrid[i, j] = val;
+                    else
+                        intGrid[i, j] = 0; // or handle invalid input
+                }
+            }
+        }
+        return intGrid;
+    }
+
+    private void ConvertToListOfString(int[,] intGrid)
+    {
+        for (int i = 0; i < N; i++)
+        {
+            for (int j = 0; j < N; j++)
+            {
+                if (intGrid[i, j] == 0)
+                    grid[i][j] = "";
+                else
+                    grid[i][j] = intGrid[i, j].ToString();
+            }
+        }
+    }
+}

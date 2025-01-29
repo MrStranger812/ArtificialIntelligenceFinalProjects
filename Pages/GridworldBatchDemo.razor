@@ -1,0 +1,296 @@
+﻿@page "/GridworldBatchDemo"
+@using System
+@using System.Collections.Generic
+@using System.Linq
+@using System.Threading.Tasks
+@inject IJSRuntime JSRuntime
+
+<h3>Gridworld MDP Batch Demo</h3>
+
+<div class="row mb-2">
+    <div class="col-md-2">
+        <label># of Gridworlds:</label>
+        <input type="number" @bind="gridworldCount" min="1" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label>Rows:</label>
+        <input type="number" min="1" @bind="rows" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label>Cols:</label>
+        <input type="number" min="1" @bind="cols" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label># Obstacles:</label>
+        <input type="number" min="0" @bind="numObstacles" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label># Terminals:</label>
+        <input type="number" min="1" @bind="numTerminals" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label>Discount:</label>
+        <input type="number" min="0" max="1" step="0.01" @bind="discount" class="form-control" />
+    </div>
+</div>
+
+<div class="row mb-2">
+    <div class="col-md-2">
+        <label>Threshold:</label>
+        <input type="number" step="0.0001" @bind="threshold" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label>pIntended:</label>
+        <input type="number" min="0" max="1" step="0.01" @bind="pIntended" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label>pLeft:</label>
+        <input type="number" min="0" max="1" step="0.01" @bind="pLeft" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label>pRight:</label>
+        <input type="number" min="0" max="1" step="0.01" @bind="pRight" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <!-- Show the cumulative times so far -->
+        <label>ValueTime (ms):</label>
+        <strong>@cumulativeValueTime.ToString("F2")</strong>
+    </div>
+    <div class="col-md-2">
+        <label>PolicyTime (ms):</label>
+        <strong>@cumulativePolicyTime.ToString("F2")</strong>
+    </div>
+</div>
+
+<div class="mb-2">
+    <button class="btn btn-primary" @onclick="GenerateGridworlds">Generate</button>
+    <button class="btn btn-success" @onclick="RunAllValueIteration">Run All (Value Iteration)</button>
+    <button class="btn btn-danger" @onclick="RunAllPolicyIteration">Run All (Policy Iteration)</button>
+</div>
+
+@if (gridworlds is not null && gridworlds.Count > 0)
+{
+    <div class="mb-2">
+        <label>Select Gridworld to View: </label>
+        <select @bind="selectedIndex">
+            @for (int i = 0; i < gridworlds.Count; i++)
+            {
+                <option value="@i">@($"Gridworld #{i + 1}")</option>
+            }
+        </select>
+    </div>
+
+    <p>Selected: Gridworld @(selectedIndex + 1)</p>
+
+    @if (gridworlds[selectedIndex] is not null)
+    {
+        var gw = gridworlds[selectedIndex];
+
+        <table class="table table-bordered table-sm" style="margin-top: 1rem;">
+            @for (int r = 0; r < gw.Rows; r++)
+            {
+                <tr>
+                    @for (int c = 0; c < gw.Cols; c++)
+                    {
+                        <td style="text-align:center; vertical-align:middle; width: 100px;">
+                            @if (gw.Obstacles.Contains((r, c)))
+                            {
+                                <span style="color:white;background-color:gray;">WALL</span>
+                            }
+                            else if (gw.Terminals.Contains((r, c)))
+                            {
+                                <strong>@(gw.Rewards[(r, c)].ToString("F1"))</strong>
+                            }
+                            else
+                            {
+                                <div>
+                                    <span>@gw.Utility[r][c].ToString("F3")</span><br />
+                                    @if (gw.Policy is not null && gw.Policy[r][c] != -1)
+                                    {
+                                        <em>@actionList[gw.Policy[r][c]]</em>
+                                    }
+                                </div>
+                            }
+                        </td>
+                    }
+                </tr>
+            }
+        </table>
+    }
+}
+else
+{
+    <p>No Gridworlds generated yet.</p>
+}
+
+<h4>Cumulative Time Comparison (ms)</h4>
+<canvas id="cumulativeTimeChart" width="400" height="150"></canvas>
+
+@code {
+
+    private int gridworldCount = 3;
+    private int rows = 3;
+    private int cols = 4;
+    private int numObstacles = 1;
+    private int numTerminals = 2;
+    private double discount = 0.9;
+    private double threshold = 1e-3;
+
+    private double pIntended = 0.8;
+    private double pLeft = 0.1;
+    private double pRight = 0.1;
+
+    private List<GridworldMDPDemo.Gridworld> gridworlds = new();
+    private int selectedIndex = 0;
+
+    private double cumulativeValueTime = 0.0;
+    private double cumulativePolicyTime = 0.0;
+
+    private string[] actionList = new string[] { "Down", "Left", "Up", "Right" };
+
+
+    private void GenerateGridworlds()
+    {
+        gridworlds.Clear();
+        selectedIndex = 0;
+
+        cumulativeValueTime = 0.0;
+        cumulativePolicyTime = 0.0;
+
+
+        for (int i = 0; i < gridworldCount; i++)
+        {
+            var gw = CreateRandomGridworld();
+            gw.SetTransitionProbabilities(pIntended, pLeft, pRight);
+            gridworlds.Add(gw);
+        }
+
+
+        _ = UpdateChart();
+    }
+
+    private GridworldMDPDemo.Gridworld CreateRandomGridworld()
+    {
+        var random = new Random();
+        var newObstacles = new HashSet<(int, int)>();
+        var newTerminals = new HashSet<(int, int)>();
+        var newRewards = new Dictionary<(int, int), double>();
+
+        int count = 0;
+        while (count < numObstacles)
+        {
+            int rr = random.Next(rows);
+            int cc = random.Next(cols);
+            if (!newObstacles.Contains((rr, cc)) && !newTerminals.Contains((rr, cc)))
+            {
+                newObstacles.Add((rr, cc));
+                count++;
+            }
+        }
+
+
+        int half = numTerminals / 2;
+        int leftover = numTerminals % 2;
+
+        count = 0;
+        int neededPlus = half + leftover;
+        while (count < neededPlus)
+        {
+            int rr = random.Next(rows);
+            int cc = random.Next(cols);
+            if (!newObstacles.Contains((rr, cc)) && !newTerminals.Contains((rr, cc)))
+            {
+                newTerminals.Add((rr, cc));
+                newRewards[(rr, cc)] = 1.0;
+                count++;
+            }
+        }
+
+        count = 0;
+        while (count < half)
+        {
+            int rr = random.Next(rows);
+            int cc = random.Next(cols);
+            if (!newObstacles.Contains((rr, cc)) && !newTerminals.Contains((rr, cc)))
+            {
+                newTerminals.Add((rr, cc));
+                newRewards[(rr, cc)] = -1.0;
+                count++;
+            }
+        }
+
+        var actions = new List<(int, int)>
+        {
+            (1, 0),   // Down
+            (0, -1),  // Left
+            (-1, 0),  // Up
+            (0, 1)    // Right
+        };
+
+        var gw = new GridworldMDPDemo.Gridworld(
+            rows, cols,
+            newRewards,
+            newTerminals,
+            newObstacles,
+            actions,
+            discount
+        );
+
+        return gw;
+    }
+
+
+    private async Task RunAllValueIteration()
+    {
+        var sw = new System.Diagnostics.Stopwatch();
+
+        foreach (var gw in gridworlds)
+        {
+
+            gw.ResetUtilities();
+            gw.ResetPolicy();
+
+            sw.Restart();
+            gw.ValueIteration(threshold);
+            gw.GetOptimalPolicy();
+            sw.Stop();
+
+            // Accumulate time from this run
+            cumulativeValueTime += sw.Elapsed.TotalMilliseconds;
+        }
+
+        await UpdateChart();
+    }
+
+
+    private async Task RunAllPolicyIteration()
+    {
+        var sw = new System.Diagnostics.Stopwatch();
+
+        foreach (var gw in gridworlds)
+        {
+            gw.ResetUtilities();
+            gw.ResetPolicy();
+
+            sw.Restart();
+            gw.PolicyIteration(threshold);
+            sw.Stop();
+
+            cumulativePolicyTime += sw.Elapsed.TotalMilliseconds;
+        }
+
+        await UpdateChart();
+    }
+
+
+    private async Task UpdateChart()
+    {
+        var labelArray = new string[] { "Cumulative Value Iteration", "Cumulative Policy Iteration" };
+        var dataArray = new double[] { cumulativeValueTime, cumulativePolicyTime };
+
+        await JSRuntime.InvokeVoidAsync("timeChartFunctions.updateChart",
+                                        "cumulativeTimeChart",
+                                        labelArray,
+                                        dataArray);
+    }
+}
